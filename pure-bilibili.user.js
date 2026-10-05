@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pure Bilibili
 // @namespace    https://github.com/squarezhong/pure-bilibili
-// @version      0.1.4
+// @version      0.1.5
 // @description  首页进入关注动态，清理推荐和显式推广，保留主动搜索与个人记录，顶栏入口可配置。
 // @author       squarezhong
 // @match        https://bilibili.com/*
@@ -44,6 +44,7 @@
   const MODULES = {
     dynamic: ['.bili-dyn-search-trendings', '.bili-dyn-banner', '.bili-dyn-recommend', '.bili-dyn-recommend-up'],
     video: ['.recommend-list-v1', '.recommend-list', '.slide-ad-exp', '.ad-report',
+      '.video-card-ad-small', '.ad-feedback-menu', '.ad-feedback-menu-popover',
       '.bpx-player-ending-related', '.bpx-player-ending-recommend', '.bpx-player-recommend',
       '.bilibili-player-ending-panel-box-recommend'],
     search: ['.search-recommend', '.search-recommend-container', '.search-discovery'],
@@ -72,6 +73,8 @@
   let sessionOnly = false;
   let suspended = false;
   let observer;
+  let layoutObserver;
+  const observedLayout = new Set();
   const attempts = new WeakMap();
 
   function normalize(value) {
@@ -133,6 +136,14 @@
       html:not([data-pure-bilibili-page="unmanaged"]) :is(${AD_MODULES}){display:none!important}
       .pure-bilibili-empty-side{display:none!important}
       .pure-bilibili-wide-feed{width:fit-content!important;max-width:calc(100% - 32px);margin-left:auto!important;margin-right:auto!important}
+      .pure-bilibili-search-header{min-width:0!important}
+      .pure-bilibili-search-header .left-entry{margin-right:0!important}
+      .pure-bilibili-search-header .right-entry{flex-shrink:0!important}
+      .pure-bilibili-search-container{flex:1 1 0%!important;min-width:0!important;margin-left:16px!important;margin-right:16px!important}
+      .pure-bilibili-search-bar{box-sizing:border-box!important;width:var(--pure-bilibili-search-width,360px)!important;min-width:0!important;max-width:none!important;margin-left:auto!important;margin-right:auto!important;transform:translateX(var(--pure-bilibili-search-offset,0px))!important}
+      html[data-pure-bilibili-page="video"] .pure-bilibili-danmaku-overflow{overflow:visible!important}
+      html[data-pure-bilibili-page="video"] .video-pod-above-modules.pure-bilibili-danmaku-overflow{position:relative;z-index:3}
+      html[data-pure-bilibili-page="video"] .pure-bilibili-danmaku-overflow .danmaku-box{z-index:3}
       html[data-pure-bilibili-page="home"] .bili-feed4{visibility:hidden!important}`;
     document.documentElement.append(style);
   }
@@ -230,6 +241,48 @@
     });
   }
 
+  function layoutSearch() {
+    const targets = new Set();
+    query(HEADER).forEach(header => {
+      query('.center-search-container', header).forEach(container => {
+        const bar = container.querySelector('.center-search__bar');
+        const menu = container.parentElement;
+        const left = menu?.querySelector(':scope > .left-entry');
+        const right = menu?.querySelector(':scope > .right-entry');
+        if (!bar || !left || !right) return;
+        menu.classList.add('pure-bilibili-search-header');
+        container.classList.add('pure-bilibili-search-container');
+        bar.classList.add('pure-bilibili-search-bar');
+        [container, left, right].forEach(el => targets.add(el));
+        const viewport = document.documentElement.clientWidth || window.innerWidth;
+        const leftEdge = Math.max(16, left.getBoundingClientRect().right + 16);
+        const rightEdge = Math.min(viewport - 16, right.getBoundingClientRect().left - 16);
+        const centeredWidth = 2 * Math.min(viewport / 2 - leftEdge, rightEdge - viewport / 2);
+        // Below a usable centered width, place the search in the actual navigation gap.
+        const centered = centeredWidth >= 180;
+        const width = Math.max(0, Math.floor(Math.min(360, centered ? centeredWidth : rightEdge - leftEdge)));
+        const center = centered ? viewport / 2 : (leftEdge + rightEdge) / 2;
+        const set = (name, value) => {
+          if (bar.style.getPropertyValue(name) !== value) bar.style.setProperty(name, value);
+        };
+        set('--pure-bilibili-search-width', `${width}px`);
+        const rect = bar.getBoundingClientRect();
+        if (!rect.width) return; // Hidden headers are measured when they become visible.
+        const previous = parseFloat(bar.style.getPropertyValue('--pure-bilibili-search-offset')) || 0;
+        const offset = Math.round((previous + center - (rect.left + rect.width / 2)) * 100) / 100;
+        set('--pure-bilibili-search-offset', `${offset}px`);
+      });
+    });
+    if (typeof window.ResizeObserver !== 'function') return;
+    if (!layoutObserver) layoutObserver = new window.ResizeObserver(schedule);
+    observedLayout.forEach(el => {
+      if (!targets.has(el)) { layoutObserver.unobserve(el); observedLayout.delete(el); }
+    });
+    targets.forEach(el => {
+      if (!observedLayout.has(el)) { layoutObserver.observe(el); observedLayout.add(el); }
+    });
+  }
+
   function commerceURL(url) {
     return url && (['cm.bilibili.com', 'mall.bilibili.com', 'show.bilibili.com', 'biligame.com', 'www.biligame.com'].includes(url.hostname) ||
       (['www.bilibili.com', 'bilibili.com'].includes(url.hostname) && url.pathname.startsWith('/h5/mall/')));
@@ -274,6 +327,9 @@
   }
 
   function cleanPlayer(desired) {
+    query('.video-pod-above-modules,.video-pod-above-modules__inner').forEach(container => {
+      container.classList.toggle('pure-bilibili-danmaku-overflow', page === 'video' && !!container.querySelector('.danmaku-box'));
+    });
     if (page === 'liveHome') {
       query('.player-area-ctnr video').forEach(video => { if (!video.paused) video.pause(); });
     }
@@ -326,6 +382,8 @@
     cleanPageModules(desired);
     cleanPlayer(desired);
     reconcile(desired);
+    // Measure after navigation hiding/restoration has affected the flex layout.
+    layoutSearch();
   }
   function schedule() {
     if (!suspended && !frame) frame = requestAnimationFrame(apply);
@@ -453,9 +511,12 @@
   } catch (error) { console.warn('[Pure Bilibili] 油猴菜单或设置监听注册失败', error); }
   window.addEventListener('popstate', schedule);
   window.addEventListener('hashchange', schedule);
+  window.addEventListener('resize', schedule, { passive: true });
   window.addEventListener('pagehide', () => {
     suspended = true;
     observer?.disconnect();
+    layoutObserver?.disconnect();
+    observedLayout.clear();
     if (frame) cancelAnimationFrame(frame);
     frame = 0;
   });
