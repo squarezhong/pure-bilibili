@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pure Bilibili
 // @namespace    https://github.com/squarezhong/pure-bilibili
-// @version      0.1.5
+// @version      0.1.6
 // @description  首页进入关注动态，清理推荐和显式推广，保留主动搜索与个人记录，顶栏入口可配置。
 // @author       squarezhong
 // @match        https://bilibili.com/*
@@ -139,6 +139,8 @@
       .pure-bilibili-search-header{min-width:0!important}
       .pure-bilibili-search-header .left-entry{margin-right:0!important}
       .pure-bilibili-search-header .right-entry{flex-shrink:0!important}
+      /* Preserve native centering; shift only the portion that would cross the right edge. */
+      .right-entry:has(.upload-entry.${HIDDEN}) :is(.dynamic-entry,.favorite-entry,.history-entry) > .v-popover.is-bottom{translate:min(0px,calc(var(--pure-bilibili-popover-room,100vw) - 50%)) 0!important;transition-property:transform,opacity!important}
       .pure-bilibili-search-container{flex:1 1 0%!important;min-width:0!important;margin-left:16px!important;margin-right:16px!important}
       .pure-bilibili-search-bar{box-sizing:border-box!important;width:var(--pure-bilibili-search-width,360px)!important;min-width:0!important;max-width:none!important;margin-left:auto!important;margin-right:auto!important;transform:translateX(var(--pure-bilibili-search-offset,0px))!important}
       html[data-pure-bilibili-page="video"] .pure-bilibili-danmaku-overflow{overflow:visible!important}
@@ -244,6 +246,16 @@
   function layoutSearch() {
     const targets = new Set();
     query(HEADER).forEach(header => {
+      query('.right-entry :is(.dynamic-entry,.favorite-entry,.history-entry) > .v-popover.is-bottom', header).forEach(popover => {
+        targets.add(popover);
+        const rect = popover.parentElement.getBoundingClientRect();
+        const viewport = document.documentElement.clientWidth || window.innerWidth;
+        const margin = parseFloat(window.getComputedStyle(popover).marginLeft) || 0;
+        const room = `${viewport - 8 - (rect.left + rect.width / 2) - margin}px`;
+        if (popover.style.getPropertyValue('--pure-bilibili-popover-room') !== room) {
+          popover.style.setProperty('--pure-bilibili-popover-room', room);
+        }
+      });
       query('.center-search-container', header).forEach(container => {
         const bar = container.querySelector('.center-search__bar');
         const menu = container.parentElement;
